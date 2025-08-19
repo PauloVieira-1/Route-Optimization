@@ -1,0 +1,4 @@
+DepotID,DepotName,Latitude,Longitude,Capacity,MaxDistance,Type
+1,Main Warehouse,52.0907,5.1214,1000,500,Central
+2,North Depot,52.5200,13.4050,800,400,Regional
+3,South Depot,48.8566,2.3522,600,350,Regional
