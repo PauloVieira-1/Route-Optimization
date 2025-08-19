@@ -47,6 +47,15 @@ class DataHandler:
         self.cursor.execute(query, values)  
         self.connection.commit()
 
+    def get_all(self, table_name: str) -> List[List[str]]:
+        """
+        Get all rows from the given table.
+        :param table_name: Name of the table to get all rows from.
+        :return: List of all rows in the table.
+        """
+        query = f"SELECT * FROM {table_name};"
+        return list(self.cursor.execute(query))
+
     def print_table(self, table_name: str) -> None:
         """
         Pretty print the given table.
