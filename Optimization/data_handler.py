@@ -104,5 +104,13 @@ class DataHandler:
 
         print("=" * total_width + "\n")
 
+
     def run(self):
         print("DB is opened")
+
+    def add_name_to_customer(self, customer_id: int, name: str) -> None:
+        """Add the name column to the customer table."""
+        query = f"UPDATE customers SET name=? WHERE customer_id=?;"
+        self.cursor.execute(query, (name, customer_id))
+        self.connection.commit()
+
