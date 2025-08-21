@@ -1,5 +1,6 @@
+# data_handler.py
 import sqlite3
-from typing import Dict, List
+from typing import Dict, List, Any, Optional
 
 class DataHandler:
     def __init__(self, database_path: str):
@@ -7,20 +8,17 @@ class DataHandler:
         Initialize the DataHandler object.
         :param database_path: Path to the sqlite database that we will be using.
         """
-        self.connection = sqlite3.connect(database_path)
+        self.connection = sqlite3.connect(database_path, check_same_thread=False)
         self.cursor = self.connection.cursor()
     
     def close(self):
-        """
-        Close the connection to the database.
-        This should be called when you're done with the object.
-        """
-        self.connection.close() # Remeber to close the connection when done
+        """Close the connection to the database."""
+        self.connection.close()
 
     def create_table(self, table_name: str, columns: Dict[str, str]) -> None:
         """
         Create a table with given columns.
-        Example columns: {"id": "INTEGER PRIMARY KEY", "name": "TEXT", "age": "INTEGER"}
+        Example: {"id": "INTEGER PRIMARY KEY", "name": "TEXT", "age": "INTEGER"}
         """
         col_str = ", ".join([f"{col} {dtype}" for col, dtype in columns.items()])
         query = f"CREATE TABLE IF NOT EXISTS {table_name} ({col_str});"
@@ -28,39 +26,51 @@ class DataHandler:
         self.connection.commit()
  
     def delete_table(self, table_name: str) -> None:
-        """
-        Delete the given table.
-        :param table_name: Name of the table to delete
-        """
+        """Delete the given table."""
         query = f"DROP TABLE IF EXISTS {table_name};"
         self.cursor.execute(query)
         self.connection.commit()
     
-    def insert(self, table_name: str, values: List[str]) -> None:
+    def insert_with_columns(self, table_name: str, columns: List[str], values: List[Any]) -> None:
         """
-        Insert the given values into the specified table.
-        :param table_name: Name of the table to insert into
-        :param values: List of values to insert. The length of this list must match the number of columns in the table.
+        Insert row by specifying only certain columns.
+        Example: insert_with_columns("scenarios", ["Name"], ["Scenario A"])
+        """
+        col_str = ", ".join(columns)
+        val_str = ", ".join(["?"] * len(values))
+        query = f"INSERT INTO {table_name} ({col_str}) VALUES ({val_str});"
+        self.cursor.execute(query, values)
+        self.connection.commit()
+
+    def insert(self, table_name: str, values: List[Any]) -> None:
+        """
+        Insert row with values for all columns.
+        WARNING: If a column is AUTOINCREMENT, you should pass None for it.
         """
         col_str = ", ".join(["?"] * len(values))
         query = f"INSERT INTO {table_name} VALUES ({col_str});"
         self.cursor.execute(query, values)  
         self.connection.commit()
 
-    def get_all(self, table_name: str) -> List[List[str]]:
-        """
-        Get all rows from the given table.
-        :param table_name: Name of the table to get all rows from.
-        :return: List of all rows in the table.
-        """
+    def get_all(self, table_name: str) -> List[List[Any]]:
+        """Get all rows from a table."""
         query = f"SELECT * FROM {table_name};"
         return list(self.cursor.execute(query))
 
+    def get_by_id(self, table_name: str, id_column: str, id_value: Any) -> Optional[List[Any]]:
+        """Get a single row by ID."""
+        query = f"SELECT * FROM {table_name} WHERE {id_column}=?;"
+        self.cursor.execute(query, (id_value,))
+        return self.cursor.fetchone()
+
+    def delete_by_id(self, table_name: str, id_column: str, id_value: Any) -> None:
+        """Delete a row by ID."""
+        query = f"DELETE FROM {table_name} WHERE {id_column}=?;"
+        self.cursor.execute(query, (id_value,))
+        self.connection.commit()
+
     def print_table(self, table_name: str) -> None:
-        """
-        Pretty print the given table.
-        :param table_name: Name of the table to print.
-        """
+        """Pretty print the given table."""
         print("\n")
         # Get headers
         query_header = f"PRAGMA table_info({table_name});"
@@ -93,7 +103,6 @@ class DataHandler:
             print(row_str)
 
         print("=" * total_width + "\n")
-
 
     def run(self):
         print("DB is opened")
