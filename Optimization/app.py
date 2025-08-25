@@ -1,13 +1,16 @@
 # app.py
 from flask import Flask, request, jsonify
 from data_handler import DataHandler
-from tp import transportationProblem
+from models.MDVRP import MDVRPHeterogeneous
+from models.tp import transportationProblem
 from flask_cors import CORS
 import datetime
+from utilities import *
+
 
 
 app = Flask(__name__)
-CORS(app)  # WARNING: opens API to all origins
+CORS(app) 
 
 db = DataHandler("../data/data.db")
  
@@ -18,9 +21,8 @@ def get_current_date():
 def get_id():
     return datetime.datetime.now().strftime("%Y%m%d%H%M%S")
 
-# -------------------
-# SCENARIOS
-# -------------------
+# ---------------- Scenarios ---------------- #
+
 @app.route("/scenarios", methods=["GET"])
 def get_scenarios():
     scenarios = db.get_all("scenarios")
@@ -35,7 +37,6 @@ def delete_scenario():
 
         scenario_id = int(data["scenario_id"])
 
-        # Optional: delete related rows first
         db.delete_by_id("depots", scenario_id, column="scenario_id")
         db.delete_by_id("vehicles", scenario_id, column="scenario_id")
         db.delete_by_id("customers", scenario_id, column="scenario_id")
@@ -64,10 +65,147 @@ def change_name():
     except Exception as e:
         print("Error:", e)
         return jsonify({"error": str(e)}), 500
+    
 
-# -------------------
-# DEPOTS
-# -------------------
+@app.route("/scenarios/full", methods=["POST"])
+def add_full_scenario():
+    try:
+        data = request.get_json()
+        print("Received JSON:", data)
+        if not data:
+            return jsonify({"error": "No JSON received"}), 400
+
+        name = data.get("name", "Unnamed Scenario")
+        date = data.get("date", get_current_date())
+        depots = data.get("depots", [])
+        vehicles = data.get("vehicles", [])
+        customers = data.get("customers", [])
+
+        scenario_id = db.insert("scenarios",[None, name, date])
+        print("Scenario inserted, ID:", scenario_id)
+
+        for depot in depots:
+            print("Inserting depot:", depot)
+            db.insert("depots", [
+                None,
+                scenario_id,
+                depot.get("depot_name"),
+                depot.get("depot_x"),
+                depot.get("depot_y"),
+                depot.get("capacity"),
+                depot.get("max_distance"),
+                depot.get("type")
+            ])
+
+        for vehicle in vehicles:
+            print("Inserting vehicle:", vehicle)
+            db.insert("vehicles", [
+                None,
+                scenario_id,
+                vehicle.get("capacity", 0),
+                vehicle.get("depot_id", 0),
+            ])
+
+        for customer in customers:
+            print("Inserting customer:", customer)
+            db.insert("customers", [
+                None,
+                scenario_id,
+                customer.get("customer_name", ""),
+                customer.get("customer_x", 0),
+                customer.get("customer_y", 0),
+                customer.get("demand", 0)
+            ])
+
+        return jsonify({
+    "status": "success",
+    "scenario": {
+        "id": scenario_id,
+        "name": name,
+        "date": get_current_date()
+    }
+}), 201
+
+    except Exception as e:
+        print("SERVER ERROR:", e)
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/scenarios_by_id", methods=["POST"])
+def get_scenarios_by_id():
+    try:
+        data = request.get_json(force=True)
+        scenario_id = data.get("scenario_id")
+
+        if scenario_id is None:
+            return jsonify({"error": "Missing scenario_id"}), 400
+
+        scenario_id = int(scenario_id)
+
+        scenario_row = db.get_by_id("scenarios", scenario_id)
+        if not scenario_row:
+            return jsonify({"error": "Scenario not found"}), 404
+
+        _, name, date = scenario_row
+
+        raw_customers = db.get_all_by_scenario_id("customers", scenario_id)
+        raw_vehicles = db.get_all_by_scenario_id("vehicles", scenario_id)
+        raw_depots = db.get_all_by_scenario_id("depots", scenario_id)
+
+        customers = [
+            {
+                "id": row[0],
+                "scenario_id": row[1],
+                "customer_name": row[2],
+                "customer_x": row[3],
+                "customer_y": row[4],
+                "demand": row[5]
+            }
+            for row in raw_customers
+        ]
+
+        vehicles = [
+            {
+                "id": row[0],
+                "scenario_id": row[1],
+                "capacity": row[2],
+                "depot_id": row[3]
+            }
+            for row in raw_vehicles
+        ]
+
+        depots = [
+            {
+                "id": row[0],
+                "scenario_id": row[1],
+                "depot_name": row[2],
+                "depot_x": row[3],
+                "depot_y": row[4],
+                "capacity": row[5],
+                "max_distance": row[6],
+                "type": row[7]
+            }
+            for row in raw_depots
+        ]
+
+        return jsonify({
+            "scenario_id": scenario_id,
+            "name": name,
+            "date": date,
+            "customers": customers,
+            "vehicles": vehicles,
+            "depots": depots
+        })
+
+    except ValueError:
+        return jsonify({"error": "Invalid scenario_id"}), 400
+    except Exception as e:
+        print("SERVER ERROR:", e)
+        return jsonify({"error": str(e)}), 500
+
+
+
+# ---------------- Depots ---------------- #
+
 @app.route("/depots", methods=["GET"])
 def get_depots():
     scenario_id = request.args.get("scenario_id")
@@ -128,9 +266,8 @@ def delete_depot():
         print("Error:", e)
         return jsonify({"error": str(e)}), 500
 
-# -------------------
-# CUSTOMERS
-# -------------------
+# ---------------- Customers ---------------- #
+
 @app.route("/customers", methods=["GET"])
 def get_customers():
     try:
@@ -198,9 +335,8 @@ def delete_customer():
 
 
 
-# -------------------
-# VEHICLES
-# -------------------
+# ---------------- Vehicles ---------------- #
+
 @app.route("/vehicles", methods=["GET"])
 def get_vehicles():
     vehicles = db.get_all("vehicles")
@@ -213,15 +349,15 @@ def add_vehicle():
     values = [
         data.get("vehicle_id"),
         data.get("scenario_id"),
-        data.get("capacity"),
-        data.get("max_distance"),
+        data.get("capacity"),   
+        data.get("depot_id"), 
     ]
     new_id = db.insert("vehicles", values)
     new_vehicle = {
         "vehicle_id": new_id,
         "scenario_id": data.get("scenario_id"),
+        "depot_id": data.get("depot_id"),
         "capacity": data.get("capacity"),
-        "max_distance": data.get("max_distance"),
     }
     return jsonify([new_vehicle]), 201
 
@@ -243,144 +379,7 @@ def delete_vehicle():
         return jsonify({"error": str(e)}), 500
     
 
-# -------------------
-# SCENARIOS
-# -------------------
-@app.route("/scenarios/full", methods=["POST"])
-def add_full_scenario():
-    try:
-        data = request.get_json()
-        print("Received JSON:", data)
-        if not data:
-            return jsonify({"error": "No JSON received"}), 400
-
-        name = data.get("name", "Unnamed Scenario")
-        date = data.get("date", get_current_date())
-        depots = data.get("depots", [])
-        vehicles = data.get("vehicles", [])
-        customers = data.get("customers", [])
-
-        scenario_id = db.insert("scenarios",[None, name, date])
-        print("Scenario inserted, ID:", scenario_id)
-
-        for depot in depots:
-            print("Inserting depot:", depot)
-            db.insert("depots", [
-                None,
-                scenario_id,
-                depot.get("depot_name"),
-                depot.get("depot_x"),
-                depot.get("depot_y"),
-                depot.get("capacity"),
-                depot.get("max_distance"),
-                depot.get("type")
-            ])
-
-        for vehicle in vehicles:
-            print("Inserting vehicle:", vehicle)
-            db.insert("vehicles", [
-                None,
-                scenario_id,
-                vehicle.get("capacity", 0),
-                vehicle.get("max_distance", 0),
-            ])
-
-        for customer in customers:
-            print("Inserting customer:", customer)
-            db.insert("customers", [
-                None,
-                scenario_id,
-                customer.get("customer_name", ""),
-                customer.get("customer_x", 0),
-                customer.get("customer_y", 0),
-                customer.get("demand", 0)
-            ])
-
-        return jsonify({
-    "status": "success",
-    "scenario": {
-        "id": scenario_id,
-        "name": name,
-        "date": get_current_date()
-    }
-}), 201
-
-    except Exception as e:
-        print("SERVER ERROR:", e)
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/scenarios_by_id", methods=["POST"])
-def get_scenarios_by_id():
-    try:
-        data = request.get_json(force=True)
-        scenario_id = data.get("scenario_id")
-
-        if scenario_id is None:
-            return jsonify({"error": "Missing scenario_id"}), 400
-
-        scenario_id = int(scenario_id)
-
-        scenario_row = db.get_by_id("scenarios", scenario_id)
-        if not scenario_row:
-            return jsonify({"error": "Scenario not found"}), 404
-
-        _, name, date = scenario_row
-
-        raw_customers = db.get_all_by_scenario_id("customers", scenario_id)
-        raw_vehicles = db.get_all_by_scenario_id("vehicles", scenario_id)
-        raw_depots = db.get_all_by_scenario_id("depots", scenario_id)
-
-        customers = [
-            {
-                "id": row[0],
-                "scenario_id": row[1],
-                "customer_name": row[2],
-                "customer_x": row[3],
-                "customer_y": row[4],
-                "demand": row[5]
-            }
-            for row in raw_customers
-        ]
-
-        vehicles = [
-            {
-                "id": row[0],
-                "scenario_id": row[1],
-                "capacity": row[2],
-                "max_distance": row[3]
-            }
-            for row in raw_vehicles
-        ]
-
-        depots = [
-            {
-                "id": row[0],
-                "scenario_id": row[1],
-                "depot_name": row[2],
-                "depot_x": row[3],
-                "depot_y": row[4],
-                "capacity": row[5],
-                "max_distance": row[6],
-                "type": row[7]
-            }
-            for row in raw_depots
-        ]
-
-        return jsonify({
-            "scenario_id": scenario_id,
-            "name": name,
-            "date": date,
-            "customers": customers,
-            "vehicles": vehicles,
-            "depots": depots
-        })
-
-    except ValueError:
-        return jsonify({"error": "Invalid scenario_id"}), 400
-    except Exception as e:
-        print("SERVER ERROR:", e)
-        return jsonify({"error": str(e)}), 500
-
+# ---------------- Other ---------------- #
 
 @app.route("/reset-database", methods=["POST"])
 def reset_database():
@@ -394,18 +393,49 @@ def reset_database():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
-def transform_supply(supply_list):
-    new_dict = {}
-    for dic in supply_list:
-        new_dict[dic["depot_name"]] = dic["capacity"]
-    return new_dict
 
-def transform_demand(demand_list):
-    new_dict = {}
-    for dic in demand_list:
-        new_dict[dic["customer_name"]] = dic["demand"]
-    return new_dict
+# ---------------- Solvers ---------------- #
 
+@app.route("/mdvrp", methods=["POST"])
+def solve_mdvrp():
+    try:
+        data = request.get_json(force=True)
+        depots = data.get("depots", [])
+        customers = data.get("customers", [])
+        vehicles = data.get("vehicles", [])
+        cost_matrix = data.get("costMatrix", [])
+
+        # Clean depot and customer names
+        depot_names = [d["depot_name"].strip() for d in depots]
+        customer_names = [c["customer_name"].strip() for c in customers]
+
+        # Build demands dict
+        demands = {c["customer_name"].strip(): c["demand"] for c in customers}
+
+        # Build vehicles dict
+        vehicles_dict = build_vehicles_dict(vehicles, depots)
+
+        # Build distance matrix
+        distance_matrix = build_distance_matrix(depots, customers, cost_matrix)
+
+        # ---------------- Debug ---------------- #
+        print("Depot names:", depot_names)
+        print("Customer names:", customer_names)
+        print("Demands:", demands)
+        print("Vehicles dict:", vehicles_dict)
+        print("Distance matrix sample:", distance_matrix)
+        # -------------------------------------- #
+
+        # Solve MDVRP
+        problem = MDVRPHeterogeneous(distance_matrix, depot_names, customer_names, demands, vehicles_dict)
+        result = problem.solve()
+
+        return jsonify(result), 200
+
+    except Exception as e:
+        print("SERVER ERROR:", e)
+        return jsonify({"error": str(e)}), 500
+    
 @app.route("/solvetp", methods=["POST"])
 def solve():
 
