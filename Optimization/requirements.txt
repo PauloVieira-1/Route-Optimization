@@ -1,5 +1,7 @@
 flask
 gunicorn
 sqlalchemy
-pulp
+flask-cors
 numpy
+pandas
+pulp
