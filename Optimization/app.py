@@ -6,13 +6,14 @@ from models.tp import transportationProblem
 from flask_cors import CORS
 import datetime
 from utilities import *
+import os
 
 
 
 app = Flask(__name__)
 CORS(app) 
 
-db = DataHandler("../data/data.db")
+db = DataHandler(os.path.join(os.path.dirname(__file__), "../data/data.db"))
  
 def get_current_date():
     now = datetime.datetime.now()
