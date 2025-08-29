@@ -8,114 +8,120 @@ class MDVRPHeterogeneous:
         self.demands = demands
         self.vehicles = vehicles
         self.nodes = depots + customers
-        
-        # Validate inputs
         self._validate_inputs()
 
     def _validate_inputs(self):
-        """Validate that all required distance matrix entries exist"""
-        missing_entries = []
-        
+        missing = []
         for i in self.nodes:
             for j in self.nodes:
                 if (i, j) not in self.distance_matrix:
-                    missing_entries.append((i, j))
-        
-        if missing_entries:
-            print("Missing distance matrix entries:")
-            for entry in missing_entries[:10]:  # Show first 10
-                print(f"  {entry}")
-            if len(missing_entries) > 10:
-                print(f"  ... and {len(missing_entries) - 10} more")
-            raise ValueError(f"Distance matrix missing {len(missing_entries)} entries")
-        
-        # Check for invalid characters or unexpected formats in node names
-        all_nodes = self.depots + self.customers
-        for node in all_nodes:
+                    missing.append((i, j))
+        if missing:
+            raise ValueError(f"Distance matrix missing {len(missing)} entries. Examples: {missing[:5]}")
+        for node in self.nodes:
             if not isinstance(node, str):
                 raise ValueError(f"Node names must be strings, got {type(node)}: {node}")
-            if len(node) > 50:  # Reasonable length check
-                print(f"Warning: Very long node name: {node}")
+
+    def _arc_allowed(self, i, j, v):
+        """Only allow arcs that start/end at the vehicle's own depot or customers.
+           No self-loops. No cross-depot moves."""
+        if i == j:
+            return False
+        depot_v = self.vehicles[v]['depot']
+        # disallow leaving from other depots
+        if i in self.depots and i != depot_v:
+            return False
+        # disallow entering other depots
+        if j in self.depots and j != depot_v:
+            return False
+        return True
 
     def solve(self):
         prob = pulp.LpProblem("MDVRP_Heterogeneous", pulp.LpMinimize)
 
-        # Binary variables: x[(i,j,v)] = 1 if vehicle v goes from i to j
+        # Vehicle activation
+        y = {v: pulp.LpVariable(f"y_{v}", 0, 1, pulp.LpBinary) for v in self.vehicles}
+
+        # Decision variables x[i,j,v]
         x = {}
         for i in self.nodes:
             for j in self.nodes:
-                for v in self.vehicles.keys():
-                    if i != j:  # No self-loops
+                for v in self.vehicles:
+                    if self._arc_allowed(i, j, v):
                         x[(i, j, v)] = pulp.LpVariable(f"x_{i}_{j}_{v}", 0, 1, pulp.LpBinary)
 
-        # MTZ load variables per vehicle
-        u = {}
-        for c in self.customers:
-            for v in self.vehicles.keys():
-                u[(c, v)] = pulp.LpVariable(f"u_{c}_{v}", 0, None, pulp.LpContinuous)
+        # MTZ load variables (customers only)
+        u = {(c, v): pulp.LpVariable(f"u_{c}_{v}", 0, None, pulp.LpContinuous)
+             for c in self.customers for v in self.vehicles}
 
         # Objective: minimize total distance
-        prob += pulp.lpSum(
-            self.distance_matrix[i, j] * x[(i, j, v)]
-            for i in self.nodes 
-            for j in self.nodes 
-            for v in self.vehicles.keys()
-            if i != j
-        )
+        prob += pulp.lpSum(self.distance_matrix[i, j] * x[(i, j, v)]
+                           for (i, j, v) in x.keys())
 
-        # Each customer is visited exactly once (incoming and outgoing)
+        # Each customer visited exactly once (incoming and outgoing across all vehicles)
         for c in self.customers:
-            prob += pulp.lpSum(x[(i, c, v)] for i in self.nodes if i != c for v in self.vehicles.keys()) == 1
-            prob += pulp.lpSum(x[(c, j, v)] for j in self.nodes if j != c for v in self.vehicles.keys()) == 1
+            prob += pulp.lpSum(x[(i, c, v)] for (i, j, v) in x if j == c) == 1
+            prob += pulp.lpSum(x[(c, j, v)] for (i, j, v) in x if i == c) == 1
 
-        # Flow conservation for vehicles
-        for v in self.vehicles.keys():
-            for node in self.nodes:
-                prob += pulp.lpSum(x[(i, node, v)] for i in self.nodes if i != node) == \
-                        pulp.lpSum(x[(node, j, v)] for j in self.nodes if j != node)
+        # Flow conservation per vehicle on customers
+        for v in self.vehicles:
+            for c in self.customers:
+                prob += pulp.lpSum(x[(i, c, v)] for (i, j, vv) in x if vv == v and j == c) == \
+                        pulp.lpSum(x[(c, j, v)] for (i, j, vv) in x if vv == v and i == c)
 
-        # Vehicle can start from its assigned depot at most once
+        # Start/end at own depot once if vehicle is used
         for v, info in self.vehicles.items():
-            depot = info['depot']
-            prob += pulp.lpSum(x[(depot, j, v)] for j in self.nodes if j != depot) <= 1
+            d = info['depot']
+            # departures from depot == y[v]
+            prob += pulp.lpSum(x[(d, j, v)] for (i, j, vv) in x if vv == v and i == d) == y[v]
+            # arrivals to depot == y[v]
+            prob += pulp.lpSum(x[(i, d, v)] for (i, j, vv) in x if vv == v and j == d) == y[v]
 
-        # MTZ subtour elimination and capacity constraints
+        # MTZ subtour elimination + capacity (per vehicle)
         for v, info in self.vehicles.items():
             Q = info['capacity']
             for i in self.customers:
                 for j in self.customers:
-                    if i != j:
+                    if i != j and (i, j, v) in x:
                         prob += u[(i, v)] - u[(j, v)] + Q * x[(i, j, v)] <= Q - self.demands[j]
-
-        # Customer load bounds - only if customer is visited by vehicle v
-        for v, info in self.vehicles.items():
-            Q = info['capacity']
+            # bounds link to visit
             for c in self.customers:
-                # If customer c is visited by vehicle v, then u[c,v] >= demand[c]
-                prob += u[(c, v)] >= self.demands[c] * pulp.lpSum(x[(i, c, v)] for i in self.nodes if i != c)
-                # Load cannot exceed capacity
+                prob += u[(c, v)] >= self.demands[c] * pulp.lpSum(
+                    x[(i, c, v)] for (i, j, vv) in x if vv == v and j == c
+                )
                 prob += u[(c, v)] <= Q
 
         # Solve
         prob.solve(pulp.PULP_CBC_CMD(msg=False))
 
-        # Extract routes
+        # ---- Debug arcs (optional) ----
+        print("\n=== Active arcs ===")
+        for (i, j, v), var in x.items():
+            if var.value() == 1:
+                print(f"Vehicle {v}: {i} -> {j}")
+
+        # ---- Route reconstruction ----
         routes = []
         for v, info in self.vehicles.items():
-            depot = info['depot']
-            route = [depot]
-            visited = set()
+            d = info['depot']
+            arcs_v = {(i, j) for (i, j, vv) in x if vv == v and x[(i, j, v)].value() == 1}
+            if not arcs_v:
+                continue
+            # chain from depot
+            route = [d]
+            current = d
+            seen = set()
             while True:
-                next_nodes = [j for j in self.nodes if j != route[-1] and 
-                             (route[-1], j, v) in x and x[(route[-1], j, v)].value() == 1]
-                if not next_nodes:
+                nexts = [j for (i, j) in arcs_v if i == current]
+                if not nexts:
                     break
-                next_node = next_nodes[0]
-                if next_node in visited:
+                nxt = nexts[0]
+                route.append(nxt)
+                if nxt in seen:
                     break
-                route.append(next_node)
-                visited.add(next_node)
-                if next_node in self.depots:
+                seen.add(nxt)
+                current = nxt
+                if current == d:
                     break
             if len(route) > 1:
                 routes.append({"vehicle": v, "route": route, "capacity": info['capacity']})
@@ -127,43 +133,12 @@ class MDVRPHeterogeneous:
         }
 
 
-# Debug function to help identify the issue
-def debug_inputs(distance_matrix, depots, customers, demands, vehicles):
-    """Helper function to debug your inputs"""
-    print("=== INPUT DEBUG INFO ===")
-    print(f"Depots: {depots}")
-    print(f"Customers: {customers}")
-    print(f"Demands keys: {list(demands.keys())}")
-    print(f"Vehicle info: {vehicles}")
-    
-    all_nodes = depots + customers
-    print(f"All nodes: {all_nodes}")
-    
-    print("\nDistance matrix keys (first 10):")
-    keys = list(distance_matrix.keys())[:10]
-    for key in keys:
-        print(f"  {key}")
-    
-    print(f"\nTotal distance matrix entries: {len(distance_matrix)}")
-    print(f"Expected entries: {len(all_nodes) * len(all_nodes)}")
-    
-    # Check for problematic node names
-    for node in all_nodes:
-        if '20250825090155' in str(node):
-            print(f"WARNING: Found timestamp in node name: {node}")
-
-
 # ---------------- Example usage ---------------- #
 if __name__ == "__main__":
     depots = ["D1", "D2"]
     customers = ["C1", "C2", "C3", "C4"]
 
-    demands = {
-        "C1": 4,
-        "C2": 6,
-        "C3": 5,
-        "C4": 7,
-    }
+    demands = {"C1": 4, "C2": 6, "C3": 5, "C4": 7}
 
     vehicles = {
         "V1": {"depot": "D1", "capacity": 10},
@@ -180,9 +155,7 @@ if __name__ == "__main__":
         ("C4","D1"):15, ("C4","D2"):9, ("C4","C1"):7, ("C4","C2"):3, ("C4","C3"):4, ("C4","C4"):0,
     }
 
-    # Debug your inputs first
-    debug_inputs(dist, depots, customers, demands, vehicles)
-    
     solver = MDVRPHeterogeneous(dist, depots, customers, demands, vehicles)
     result = solver.solve()
+    print("\n=== Final Result ===")
     print(result)
