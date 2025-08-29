@@ -24,6 +24,10 @@ def get_id():
 
 # ---------------- Scenarios ---------------- #
 
+@app.route("/")
+def home():
+    return "Route Optimization API is running 🚀"
+
 @app.route("/scenarios", methods=["GET"])
 def get_scenarios():
     scenarios = db.get_all("scenarios")
@@ -461,4 +465,5 @@ def solve():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5100, debug=True)
+    port = int(os.environ.get("PORT", 5000))  
+    app.run(host="0.0.0.0", port=port, debug=True)
