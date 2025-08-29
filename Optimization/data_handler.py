@@ -1,6 +1,5 @@
 # data_handler.py
 import sqlite3
-from typing import Dict, List, Any, Optional
 
 class DataHandler:
     def __init__(self, db_path):
