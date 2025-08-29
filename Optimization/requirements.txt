@@ -3,5 +3,4 @@ gunicorn
 sqlalchemy
 pulp
 flask_cors
-math 
 sqlite3
